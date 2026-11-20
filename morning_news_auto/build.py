@@ -35,19 +35,55 @@ def article(x):
     return f'<article class="story"><span class="tag">어젯밤 {esc(x["time"])} 보도</span><h3>{esc(x["title"])}</h3><ul class="five-lines">{info}</ul><div class="source">출처 · {esc(x["publisher"])} · {esc(x["time"])} KST<br><a href="{esc(x["url"])}" target="_blank" rel="noopener noreferrer">Google 뉴스에서 기사 읽기 ↗</a></div></article>'
 
 def youtube_latest(handle):
-    # YouTube public page provides channel ID; then official Atom feed provides video metadata.
-    page=fetch('https://www.youtube.com/@'+handle,700000).decode('utf-8','replace')
-    match=re.search(r'<meta\s+itemprop="channelId"\s+content="(UC[\w-]+)"',page) or re.search(r'"channelId":"(UC[\w-]+)"',page)
-    if not match:return None
-    atom=ET.fromstring(fetch('https://www.youtube.com/feeds/videos.xml?channel_id='+match.group(1)))
-    ns={'a':'http://www.w3.org/2005/Atom','yt':'http://www.youtube.com/xml/schemas/2015'}
-    entry=atom.find('a:entry',ns)
-    if entry is None:return None
-    vid=entry.findtext('yt:videoId',default='',namespaces=ns)
-    if not re.fullmatch(r'[A-Za-z0-9_-]{11}',vid):return None
-    title=entry.findtext('a:title',default='최신 영상',namespaces=ns)
-    published=entry.findtext('a:published',default='',namespaces=ns)[:10]
-    return {'title':title,'date':published,'url':'https://www.youtube.com/watch?v='+vid,'thumb':'https://i.ytimg.com/vi/'+vid+'/hqdefault.jpg'}
+    # Try both the channel homepage and Videos tab. YouTube sometimes omits
+    # channelId metadata, so fall back to a public videoId on the Videos tab.
+    pages=[]
+    for path in ('/videos',''):
+        try:
+            pages.append(fetch('https://www.youtube.com/@'+handle+path,2_000_000).decode('utf-8','replace'))
+        except Exception as e:
+            print(f'YouTube @{handle}{path}: {type(e).__name__}: {e}')
+    if not pages:
+        raise RuntimeError('YouTube pages unavailable')
+    channel_id=None
+    for page in pages:
+        for pattern in (r'<meta\s+itemprop="channelId"\s+content="(UC[\w-]+)"',
+                        r'"channelId":"(UC[\w-]+)"',
+                        r'"externalId":"(UC[\w-]+)"',
+                        r'https://www.youtube.com/channel/(UC[\w-]+)'):
+            match=re.search(pattern,page)
+            if match:
+                channel_id=match.group(1);break
+        if channel_id:break
+    if channel_id:
+        try:
+            atom=ET.fromstring(fetch('https://www.youtube.com/feeds/videos.xml?channel_id='+channel_id))
+            ns={'a':'http://www.w3.org/2005/Atom','yt':'http://www.youtube.com/xml/schemas/2015'}
+            entry=atom.find('a:entry',ns)
+            if entry is not None:
+                vid=entry.findtext('yt:videoId',default='',namespaces=ns)
+                if re.fullmatch(r'[A-Za-z0-9_-]{11}',vid):
+                    title=entry.findtext('a:title',default='최신 영상',namespaces=ns)
+                    date=entry.findtext('a:published',default='',namespaces=ns)[:10]
+                    return {'title':title,'date':date,'url':'https://www.youtube.com/watch?v='+vid,'thumb':'https://i.ytimg.com/vi/'+vid+'/hqdefault.jpg'}
+        except Exception as e:
+            print(f'YouTube RSS @{handle}: {type(e).__name__}: {e}')
+    # Fallback: public channel videos page data, when available.
+    for page in pages:
+        match=re.search(r'"videoRenderer":\{[^{}]{0,250}"videoId":"([A-Za-z0-9_-]{11})"',page)
+        if not match:
+            match=re.search(r'"videoId":"([A-Za-z0-9_-]{11})"',page)
+        if match:
+            vid=match.group(1)
+            title_match=re.search(r'"videoId":"'+re.escape(vid)+r'".{0,1500}?"title":\{"runs":\[\{"text":"([^"\\]*(?:\\.[^"\\]*)*)"',page)
+            title='공식 채널 영상 보기'
+            if title_match:
+                try:title=json.loads('"'+title_match.group(1)+'"')
+                except Exception:pass
+            print(f'YouTube @{handle}: used public video page fallback')
+            return {'title':title,'date':'','url':'https://www.youtube.com/watch?v='+vid,'thumb':'https://i.ytimg.com/vi/'+vid+'/hqdefault.jpg'}
+    print(f'YouTube @{handle}: no public video ID found')
+    return None
 
 def fan_section():
     cards=[]; status={}
@@ -56,8 +92,10 @@ def fan_section():
         try:vid=youtube_latest(handle)
         except Exception as e:status[handle]=type(e).__name__
         if vid:
+            print(f'YouTube @{handle}: thumbnail ready')
             video=f'<a class="video" href="{esc(vid["url"])}" target="_blank" rel="noopener noreferrer"><img src="{esc(vid["thumb"])}" alt="{esc(artist["name"])} 공식 유튜브 최신 영상 썸네일" loading="lazy"><span class="play">▶</span></a><p class="video-title">🎬 {esc(vid["title"])}</p><p class="small">공식 유튜브 · {esc(vid["date"])}</p>'
         else:
+            status[handle]='no video found'
             video=f'<div class="video-empty">🎬 최신 영상 정보를 가져오지 못했어요.<br><a href="https://www.youtube.com/@{esc(handle)}" target="_blank" rel="noopener noreferrer">공식 유튜브에서 확인 ↗</a></div>'
         social=''.join(f'<a href="https://www.instagram.com/{esc(username)}/" target="_blank" rel="noopener noreferrer">📸 {esc(label)} ↗</a>' for label,username in artist['insta'])
         cards.append(f'<div class="fan-card {artist["cls"]}"><h3>{esc(artist["name"])} {artist["emoji"]}</h3>{video}<div class="social-links">{social}<a href="https://www.youtube.com/@{esc(handle)}" target="_blank" rel="noopener noreferrer">▶ 공식 유튜브 ↗</a></div><p class="small">인스타그램 사진은 플랫폼 접근 제한으로 자동 표시하지 않아요. 공식 계정 링크에서 최신 게시물을 확인해 주세요.</p></div>')
