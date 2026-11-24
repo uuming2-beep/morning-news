@@ -1,22 +1,33 @@
-name: Update morning newsletter
+
+name: Morning newsletter
+
 on:
   schedule:
-    - cron: '10 23 * * *' # 08:10 Asia/Seoul, next calendar day
+    - cron: '10 23 * * *'
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Python
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Generate newsletter
+
+      - name: Install dependencies
+        run: pip install -r morning_news_auto/requirements.txt
+
+      - name: Build newsletter
         run: python morning_news_auto/build.py
+
       - name: Publish newsletter
         run: |
           git config user.name "github-actions[bot]"
